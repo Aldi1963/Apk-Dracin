@@ -1,0 +1,26 @@
+# Build outputs
+build/
+app/build/
+*.apk
+*.aab
+*.ap_
+
+# Gradle
+.gradle/
+.gradle-home/
+.kotlin/
+local.properties
+
+# Signing keys — never commit
+*.keystore
+*.jks
+*.p12
+*.pfx
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Misc
+*.log
