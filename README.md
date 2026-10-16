@@ -103,4 +103,4 @@ Proyek ini dilisensikan di bawah [MIT License](LICENSE).
 
 ## Developer
 
-**Aldi Irawan**
+**Aldi Irawan** — [github.com/Aldi1963](https://github.com/Aldi1963)
