@@ -279,7 +279,13 @@ fun MainScaffold() {
                 com.clipku.drama.ui.settings.SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onOpenStats = { navController.navigate(Routes.STATS) },
-                    onOpenAppInfo = { navController.navigate(Routes.APP_INFO) }
+                    onOpenAppInfo = { navController.navigate(Routes.APP_INFO) },
+                    onOpenProviders = { navController.navigate(Routes.PROVIDERS) }
+                )
+            }
+            composable(Routes.PROVIDERS) {
+                com.clipku.drama.ui.settings.ProviderSettingsScreen(
+                    onBack = { navController.popBackStack() }
                 )
             }
             composable(Routes.APP_INFO) {

@@ -9,6 +9,7 @@ object Routes {
     const val STATS = "stats"
     const val SPLASH = "splash"
     const val APP_INFO = "app_info"
+    const val PROVIDERS = "providers"
     const val DETAIL = "detail/{slug}?title={title}&poster={poster}"
     const val PLAYER = "player/{contentId}/{ep}/{totalEp}/{title}/{poster}/{provider}"
 
