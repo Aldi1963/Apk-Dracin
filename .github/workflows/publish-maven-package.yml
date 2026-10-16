@@ -1,0 +1,53 @@
+name: Publish Maven package
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versi artifact (mis. 1.0.3)"
+        default: "1.0.3"
+      apk:
+        description: "Path APK di repo"
+        default: "releases/app-v59-final.apk"
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate POM dan metadata
+        run: |
+          cat > /tmp/pom.xml <<'EOF'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.clipku.drama</groupId>
+            <artifactId>clipku-plus</artifactId>
+            <version>${{ inputs.version }}</version>
+            <packaging>apk</packaging>
+            <name>CLIPKU+</name>
+            <description>Aplikasi streaming drama Android</description>
+          </project>
+          EOF
+          cat > /tmp/maven-metadata.xml <<'EOF'
+          <metadata>
+            <groupId>com.clipku.drama</groupId>
+            <artifactId>clipku-plus</artifactId>
+            <versioning>
+              <latest>${{ inputs.version }}</latest>
+              <release>${{ inputs.version }}</release>
+              <versions><version>${{ inputs.version }}</version></versions>
+            </versioning>
+          </metadata>
+          EOF
+      - name: Publish ke GitHub Packages
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ inputs.version }}"
+          BASE="https://maven.pkg.github.com/Aldi1963/clipku-plus-android/com/clipku/drama/clipku-plus/$V"
+          AUTH="Aldi1963:${TOKEN}"
+          curl -f -u "$AUTH" --upload-file /tmp/pom.xml "$BASE/clipku-plus-$V.pom"
+          curl -f -u "$AUTH" --upload-file "${{ inputs.apk }}" "$BASE/clipku-plus-$V.apk"
+          curl -f -u "$AUTH" --upload-file /tmp/maven-metadata.xml \
+            "https://maven.pkg.github.com/Aldi1963/clipku-plus-android/com/clipku/drama/clipku-plus/maven-metadata.xml"
