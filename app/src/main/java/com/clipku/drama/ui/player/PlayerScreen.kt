@@ -26,7 +26,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Pause
@@ -69,9 +69,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import com.clipku.drama.ui.theme.AccentRed
 import com.clipku.drama.ui.components.ClipkuLoadingIndicator
@@ -105,7 +103,7 @@ fun PlayerScreen(
     var showEpisodePicker by remember { mutableStateOf(false) }
     var showNextCountdown by remember { mutableStateOf(false) }
     var countdownSec by remember { mutableStateOf(5) }
-    var showExitConfirm by remember { mutableStateOf(false) }
+    // Back dari full player = minimize ala YouTube (video tetap jalan di mini bar).
     var showSettings by remember { mutableStateOf(false) }
     var playerViewRef by remember { mutableStateOf<androidx.media3.ui.PlayerView?>(null) }
     var subSizeIdx by remember { mutableStateOf(vm.subtitleSize()) }
@@ -122,7 +120,8 @@ fun PlayerScreen(
     // Kontrol custom (pengganti controller bawaan ExoPlayer)
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(true) }
-    var isBuffering by remember { mutableStateOf(false) }
+    // buffering dilacak singleton agar mini bar ikut tahu
+    val isBuffering by MiniPlayerController.isBuffering.collectAsState()
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
@@ -203,30 +202,24 @@ fun PlayerScreen(
     }
     val effTotalEp = realTotalEp.coerceAtLeast(1)
 
+    // Mini player: buka sesi di controller app-scoped.
+    // true = sesi baru (wajib load stream); false = expand dari mini player (JANGAN reload).
     LaunchedEffect(contentId, currentEp) {
-        vm.setPlayerError(null)
-        vm.load(contentId, currentEp)
-        com.clipku.drama.data.history.WatchHistory.saveWatch(
-            contentId, title, posterUrl.ifEmpty { null }, providerName, effTotalEp, currentEp
+        val isNew = MiniPlayerController.openSession(
+            contentId, currentEp, effTotalEp, title, posterUrl, providerName
         )
+        vm.setPlayerError(null)
+        if (isNew) {
+            vm.load(contentId, currentEp)
+            com.clipku.drama.data.history.WatchHistory.saveWatch(
+                contentId, title, posterUrl.ifEmpty { null }, providerName, effTotalEp, currentEp
+            )
+        }
     }
 
-    if (showExitConfirm) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showExitConfirm = false },
-            title = { Text(Str.exitVideoTitle) },
-            text = { Text(Str.exitVideoDesc) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { showExitConfirm = false; onBack() }) {
-                    Text(Str.yesExit, color = Color(0xFFFF4D67))
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showExitConfirm = false }) {
-                    Text(Str.keepWatching)
-                }
-            }
-        )
+    // Sinkronkan episode/total ke sesi mini player (untuk label EP & expand)
+    LaunchedEffect(currentEp, effTotalEp) {
+        MiniPlayerController.updateEpisode(currentEp, effTotalEp)
     }
 
     // Fullscreen immersive
@@ -264,64 +257,32 @@ fun PlayerScreen(
         }
     }
 
-    val exoPlayer = remember {
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Infinix GT 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-            .setConnectTimeoutMs(30000)
-            .setReadTimeoutMs(60000)
-            .setAllowCrossProtocolRedirects(true)
-        // LoadControl dengan buffer lebih besar untuk jaringan lambat
-        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                50000,  // minBufferMs
-                100000, // maxBufferMs
-                2500,   // bufferForPlaybackMs
-                5000    // bufferForPlaybackAfterRebufferMs
-            )
-            .build()
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .setLoadControl(loadControl)
-            .build()
-            .apply {
-                playWhenReady = true
-                // Deteksi orientasi video dari dimensi track
-                addListener(object : androidx.media3.common.Player.Listener {
-                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                        // Nonaktif: default portrait sesuai permintaan user
-                        // if (!orientationLocked && videoSize.width > 0 && videoSize.height > 0) {
-                        //     isVideoPortrait = videoSize.height > videoSize.width
-                        //     orientationLocked = true
-                        // }
+    // Mini player ala YouTube: ExoPlayer app-scoped (singleton MiniPlayerController).
+    // Video tetap jalan saat user minimize dan browsing tab lain / search / detail.
+    // Dibuat sekali di sini, dipakai ulang antar sesi & antar layar.
+    val exoPlayer = remember { MiniPlayerController.ensurePlayer(context.applicationContext) }
+
+    // Listener UI milik layar ini: countdown auto-next + hook error player.
+    // (bookkeeping ENDED untuk riwayat/statistik ditangani singleton agar tidak dobel)
+    DisposableEffect(exoPlayer, currentEp, effTotalEp) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    if (currentEp < effTotalEp) {
+                        countdownSec = 5
+                        showNextCountdown = true
+                    } else {
+                        gestureHint = Str.completedNoNext
                     }
-                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                        android.util.Log.e("ClipkuPlayer", "Playback error: ${error.errorCode} - ${error.message}", error)
-                        vm.setPlayerError(Str.videoFailedRetry)
-                    }
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        // lacak buffering untuk overlay loading branded
-                        isBuffering = playbackState == androidx.media3.common.Player.STATE_BUFFERING
-                        // Countdown ala Netflix sebelum pindah episode
-                        if (playbackState == androidx.media3.common.Player.STATE_ENDED) {
-                            // tandai episode selesai (posisi = durasi penuh) untuk centang riwayat
-                            try {
-                                val d = durationMs.coerceAtLeast(0)
-                                com.clipku.drama.data.history.WatchHistory.saveWatch(
-                                    contentId, title, posterUrl.ifEmpty { null }, providerName,
-                                    effTotalEp, currentEp, d, d
-                                )
-                                com.clipku.drama.data.history.WatchStats.recordEpisodeDone()
-                            } catch (_: Exception) {}
-                            if (currentEp < effTotalEp) {
-                                countdownSec = 5
-                                showNextCountdown = true
-                            } else {
-                                gestureHint = Str.completedNoNext
-                            }
-                        }
-                    }
-                })
+                }
             }
+        }
+        exoPlayer.addListener(listener)
+        MiniPlayerController.onPlayerError = { msg -> vm.setPlayerError(msg) }
+        onDispose {
+            exoPlayer.removeListener(listener)
+            MiniPlayerController.onPlayerError = null
+        }
     }
 
     // ===== Chromecast: fungsi & listener sesi (di sini karena butuh exoPlayer) =====
@@ -426,26 +387,28 @@ fun PlayerScreen(
         }
     }
 
-    // Konfirmasi sebelum keluar
+    // Back = minimize ala YouTube (video tetap jalan), BUKAN stop.
     BackHandler {
         when {
             showEpisodePicker -> showEpisodePicker = false
             showSettings -> showSettings = false
-            exoPlayer.isPlaying -> showExitConfirm = true
+            showCastPicker -> showCastPicker = false
             else -> onBack()
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            // simpan posisi terakhir saat keluar
+            // simpan posisi terakhir saat keluar/minimize;
+            // player TIDAK di-release (milik singleton MiniPlayerController),
+            // cukup lepas dari PlayerView layar ini.
             try {
                 com.clipku.drama.data.history.WatchHistory.saveWatch(
                     contentId, title, posterUrl.ifEmpty { null }, providerName,
                     effTotalEp, currentEp, exoPlayer.currentPosition, exoPlayer.duration
                 )
             } catch (_: Exception) {}
-            exoPlayer.release()
+            try { playerViewRef?.player = null } catch (_: Exception) {}
         }
     }
 
@@ -560,6 +523,7 @@ fun PlayerScreen(
                         }
                     },
                     update = { applySubtitleSize() },
+                    onRelease = { view -> view.player = null },
                     modifier = Modifier.fillMaxSize()
                 )
                 // ===== OVERLAY BUFFERING branded (pengganti spinner bawaan ExoPlayer) =====
@@ -750,8 +714,9 @@ fun PlayerScreen(
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(onClick = { if (exoPlayer.isPlaying) showExitConfirm = true else onBack() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, Str.back, tint = Color.White)
+                            // Minimize ala YouTube: kembali browsing, video tetap jalan di mini bar
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.Default.KeyboardArrowDown, Str.minimize, tint = Color.White)
                             }
                             IconButton(onClick = {
                                 if (currentEp > 1) { currentEp--; showEpisodePicker = false; controlsVisible = true }

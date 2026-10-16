@@ -127,6 +127,8 @@ object Str {
     val play get() = if (en) "Play" else "Putar"
     val pause get() = if (en) "Pause" else "Jeda"
     val miniPlayer get() = if (en) "Mini player" else "Mini player"
+    val minimize get() = if (en) "Minimize" else "Perkecil"
+    val closePlayer get() = if (en) "Close player" else "Tutup pemutar"
     fun seekSec(s: Int) = if (en) "${if (s > 0) "+" else ""}$s sec" else "${if (s > 0) "+" else ""}$s detik"
     fun continueFrom(pos: String) = if (en) "Continue from $pos" else "Lanjut dari $pos"
     val watched get() = if (en) "Watched" else "Sudah ditonton"

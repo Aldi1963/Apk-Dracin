@@ -59,6 +59,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import com.clipku.drama.ui.history.HistoryScreen
 import com.clipku.drama.ui.player.PlayerScreen
+import com.clipku.drama.ui.player.MiniPlayerController
+import com.clipku.drama.ui.player.MiniPlayerBar
 import com.clipku.drama.ui.theme.BgCard
 import com.clipku.drama.ui.theme.ClipkuDramaTheme
 import com.clipku.drama.ui.theme.Coral
@@ -148,9 +150,31 @@ fun MainScaffold() {
     val showBottomBar = currentDestination?.hierarchy?.any { dest ->
         dest.route in tabRoutes
     } == true
+    // Mini player ala YouTube: tampil di semua layar kecuali full player & splash
+    val miniSession by MiniPlayerController.session.collectAsState()
+    val miniPlaying by MiniPlayerController.isPlaying.collectAsState()
+    val isPlayerRoute = currentDestination?.route?.startsWith("player/") == true
+    val showMiniBar = miniSession != null && !isPlayerRoute
 
     Scaffold(
         bottomBar = {
+            Column {
+                if (showMiniBar) {
+                    val s = miniSession!!
+                    MiniPlayerBar(
+                        session = s,
+                        isPlaying = miniPlaying,
+                        onTogglePlay = { MiniPlayerController.togglePlayPause() },
+                        onClose = { MiniPlayerController.close() },
+                        onExpand = {
+                            navController.navigate(
+                                Routes.player(s.contentId, s.ep, s.totalEp, s.title, s.posterUrl, s.providerName)
+                            ) { launchSingleTop = true }
+                        },
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
             if (showBottomBar) {
                 Box(
                     modifier = Modifier
@@ -199,6 +223,7 @@ fun MainScaffold() {
                         }
                     }
                 }
+            }
             }
         },
         containerColor = Color.Transparent
