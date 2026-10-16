@@ -2,10 +2,10 @@ package com.clipku.drama.ui.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -34,7 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.clipku.drama.ui.components.FastImage
+import androidx.compose.ui.viewinterop.AndroidView
 import com.clipku.drama.ui.theme.BgCard
 import com.clipku.drama.ui.theme.Coral
 import com.clipku.drama.ui.theme.Str
@@ -79,25 +79,31 @@ fun MiniPlayerBar(
                 .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (session.posterUrl.isNotBlank()) {
-                FastImage(
-                    url = session.posterUrl,
-                    contentDescription = session.title,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Coral.copy(alpha = 0.2f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.PlayArrow, null, tint = Coral, modifier = Modifier.size(24.dp))
-                }
-            }
+            // Video beneran ala YouTube (bukan poster statis): PlayerView kecil
+            // terikat ke ExoPlayer milik MiniPlayerController. Mini bar hanya
+            // ter-compose saat BUKAN route player, jadi tidak rebutan surface
+            // dengan full player.
+            AndroidView(
+                factory = { ctx ->
+                    androidx.media3.ui.PlayerView(ctx).apply {
+                        useController = false
+                        setShowBuffering(androidx.media3.ui.PlayerView.SHOW_BUFFERING_NEVER)
+                        layoutParams = android.widget.FrameLayout.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                },
+                update = { v ->
+                    val p = MiniPlayerController.playerOrNull()
+                    if (v.player !== p) v.player = p
+                },
+                onRelease = { v -> v.player = null },
+                modifier = Modifier
+                    .width(96.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+            )
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(

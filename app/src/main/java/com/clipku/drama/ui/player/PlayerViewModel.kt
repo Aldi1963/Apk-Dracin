@@ -12,7 +12,9 @@ import kotlinx.coroutines.launch
 data class PlayerUiState(
     val streamUrl: String? = null,
     val streamType: String? = null,
-    val isLoading: Boolean = true,
+    // BUGFIX v61: default false — expand dari mini player TIDAK reload,
+    // jadi loader tidak boleh nyangkut true dan video tidak boleh ke-pause.
+    val isLoading: Boolean = false,
     val error: String? = null,
     val qualities: List<com.clipku.drama.data.model.VideoQuality> = emptyList(),
     val currentQuality: String? = null,
@@ -33,68 +35,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         this.contentId = contentId
         this.episode = ep
         loadJob?.cancel()
+        // Jeda audio episode lama SEGERA saat load baru dimulai (ganti episode /
+        // kualitas / retry). Ditaruh di sini, BUKAN di LaunchedEffect(isLoading),
+        // agar expand dari mini player tidak ikut ke-pause.
+        try { MiniPlayerController.playerOrNull()?.pause() } catch (_: Exception) { }
         val seq = ++loadSeq
+        val saverForced = isDataSaverForced()
         loadJob = viewModelScope.launch {
             _uiState.value = PlayerUiState(isLoading = true)
-            try {
-                val res = SonzaixRepository.getStream(contentId, ep)
-                if (seq != loadSeq) return@launch // basi: episode sudah ganti
-                // sonzaix mengembalikan URL absolut; pakai langsung
-                val url = res.url
-                if (!url.isNullOrBlank()) {
-                    // ambil subtitle paralel (khusus provider yang dukung, cth BiliTV)
-                    var subUri: String? = null
-                    try {
-                        val subLang = subtitleLang()
-                        val sub = if (subLang == "off") null
-                            else SonzaixRepository.getSubtitle(contentId, ep, subLang)
-                        subUri = when {
-                            !sub?.url.isNullOrBlank() -> sub?.url
-                            !sub?.vttContent.isNullOrBlank() -> {
-                                val f = java.io.File(getApplication<Application>().cacheDir, "sub")
-                                f.mkdirs()
-                                val sf = java.io.File(f, "sub_${System.currentTimeMillis()}.vtt")
-                                sf.writeText(sub?.vttContent ?: "")
-                                android.net.Uri.fromFile(sf).toString()
-                            }
-                            else -> null
-                        }
-                    } catch (_: Exception) { }
-                    val saved = savedQuality()
-                    // hemat kuota: paksa kualitas terendah saat data seluler (tanpa menimpa yang diingat)
-                    val saverForced = isDataSaverForced()
-                    val initial = if (saverForced) {
-                        lowestQuality(res.qualities) ?: res.qualities.firstOrNull()
-                    } else {
-                        res.qualities.find { it.label == saved } ?: res.qualities.firstOrNull()
-                    }
-                    _uiState.value = PlayerUiState(
-                        streamUrl = url, streamType = res.type, isLoading = false,
-                        qualities = res.qualities,
-                        currentQuality = initial?.label,
-                        subtitleUri = subUri
-                    )
-                    // bila kualitas tersimpan beda dari default, langsung pakai
-                    if (initial != null && initial.label != res.qualities.firstOrNull()?.label) {
-                        switchQuality(initial, {}, save = !saverForced)
-                    }
-                } else {
-                    _uiState.value = PlayerUiState(
-                        isLoading = false,
-                        error = res.message ?: "URL stream tidak tersedia."
-                    )
+            val res = StreamLoader.loadStream(
+                getApplication(), contentId, ep,
+                subtitleLang(), savedQuality(), saverForced
+            )
+            if (seq != loadSeq) return@launch // basi: episode sudah ganti
+            if (res.ok) {
+                _uiState.value = PlayerUiState(
+                    streamUrl = res.url, streamType = res.type, isLoading = false,
+                    qualities = res.qualities,
+                    currentQuality = res.initialQuality?.label,
+                    subtitleUri = res.subtitleUri
+                )
+                // bila kualitas tersimpan beda dari default, langsung pakai
+                val initial = res.initialQuality
+                if (initial != null && initial.label != res.qualities.firstOrNull()?.label) {
+                    switchQuality(initial, {}, save = !saverForced)
                 }
-            } catch (e: Exception) {
-                val msg = e.message ?: ""
-                val friendly = when {
-                    msg.contains("502") -> "Video tidak tersedia saat ini. Server sedang bermasalah atau video sudah dihapus."
-                    msg.contains("404") -> "Video tidak ditemukan."
-                    msg.contains("timeout", ignoreCase = true) -> "Koneksi timeout. Periksa internet kamu."
-                    else -> "Gagal memuat video. Coba lagi."
-                }
+            } else {
                 _uiState.value = PlayerUiState(
                     isLoading = false,
-                    error = friendly
+                    error = res.errorMessage ?: "URL stream tidak tersedia."
                 )
             }
         }
@@ -106,6 +75,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleSubtitle(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(subtitleEnabled = enabled)
+        // persist agar auto-next controller (saat minimized) ikut preferensi ini
+        try { prefs().edit().putBoolean("subtitle_enabled", enabled).apply() } catch (_: Exception) { }
     }
 
     private fun prefs() = getApplication<Application>()
@@ -137,16 +108,6 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             com.clipku.drama.data.prefs.AppSettings.dataSaver.value &&
                 com.clipku.drama.data.prefs.AppSettings.isCellular(getApplication())
         } catch (_: Exception) { false }
-    }
-
-    /** Kualitas terendah dari daftar (berdasarkan angka di label, mis. "480p"). */
-    private fun lowestQuality(
-        qualities: List<com.clipku.drama.data.model.VideoQuality>
-    ): com.clipku.drama.data.model.VideoQuality? {
-        if (qualities.isEmpty()) return null
-        return qualities.minByOrNull { q ->
-            Regex("\\d+").find(q.label)?.value?.toIntOrNull() ?: Int.MAX_VALUE
-        } ?: qualities.lastOrNull()
     }
 
     /** Ganti kualitas; kembalikan true bila URL langsung tersedia (tanpa fetch ulang). */

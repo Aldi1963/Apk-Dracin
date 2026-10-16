@@ -114,7 +114,8 @@ fun PlayerScreen(
         sv.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
     }
     var playbackSpeed by remember { mutableStateOf(1f) }
-    var sleepMinutes by remember { mutableStateOf<Int?>(null) }
+    // Sleep timer milik MiniPlayerController (app-scoped): tetap jalan saat minimize.
+    val sleepMinutes by MiniPlayerController.sleepTimerMinutes.collectAsState()
     var pendingSeekPos by remember { mutableStateOf(0L) }
     var gestureHint by remember { mutableStateOf<String?>(null) }
     // Kontrol custom (pengganti controller bawaan ExoPlayer)
@@ -279,9 +280,17 @@ fun PlayerScreen(
         }
         exoPlayer.addListener(listener)
         MiniPlayerController.onPlayerError = { msg -> vm.setPlayerError(msg) }
+        MiniPlayerController.onSleepTimerFired = {
+            gestureHint = Str.sleepTimerPaused
+            scope.launch {
+                kotlinx.coroutines.delay(2000)
+                gestureHint = null
+            }
+        }
         onDispose {
             exoPlayer.removeListener(listener)
             MiniPlayerController.onPlayerError = null
+            MiniPlayerController.onSleepTimerFired = null
         }
     }
 
@@ -336,11 +345,15 @@ fun PlayerScreen(
         }
     }
 
-    // Jeda audio episode lama segera setelah loading episode baru dimulai
-    LaunchedEffect(state.isLoading) {
-        if (state.isLoading) {
-            try { exoPlayer.pause() } catch (_: Exception) { }
-        }
+    // BUGFIX v61: blok pause-di-isLoading DIHAPUS — expand dari mini player
+    // tidak me-reload (openSession return false), jadi isLoading tidak boleh
+    // mem-pause video. Pause eksplisit sudah dipindah ke awal vm.load().
+
+    // Tandai full player terlihat: controller tidak auto-next sendiri
+    // (countdown milik layar yang jalan), agar tidak dobel-advance.
+    DisposableEffect(Unit) {
+        MiniPlayerController.fullPlayerVisible = true
+        onDispose { MiniPlayerController.fullPlayerVisible = false }
     }
 
     // Countdown episode berikutnya (hanya bila auto-putar aktif)
@@ -375,17 +388,8 @@ fun PlayerScreen(
 
     LaunchedEffect(playbackSpeed) { exoPlayer.setPlaybackSpeed(playbackSpeed) }
 
-    // Sleep timer
-    LaunchedEffect(sleepMinutes) {
-        sleepMinutes?.let { mins ->
-            kotlinx.coroutines.delay(mins * 60_000L)
-            exoPlayer.pause()
-            sleepMinutes = null
-            gestureHint = Str.sleepTimerPaused
-            kotlinx.coroutines.delay(2000)
-            gestureHint = null
-        }
-    }
+    // Sleep timer dipindah ke MiniPlayerController (app-scoped) agar tetap
+    // jalan saat video di-minimize. UI di bawah hanya memanggil controller.
 
     // Back = minimize ala YouTube (video tetap jalan), BUKAN stop.
     BackHandler {
@@ -428,27 +432,9 @@ fun PlayerScreen(
 
     LaunchedEffect(state.streamUrl, state.streamType, state.subtitleUri, state.subtitleEnabled) {
         state.streamUrl?.let { url ->
-            val mimeType = when (state.streamType?.lowercase()) {
-                "hls", "m3u8" -> androidx.media3.common.MimeTypes.APPLICATION_M3U8
-                "dash", "mpd" -> androidx.media3.common.MimeTypes.APPLICATION_MPD
-                else -> null
-            }
-            val builder = MediaItem.Builder().setUri(url)
-            if (mimeType != null) builder.setMimeType(mimeType)
-            // subtitle Indonesia bila tersedia & diaktifkan
-            if (state.subtitleEnabled && !state.subtitleUri.isNullOrBlank()) {
-                try {
-                    val subConfig = MediaItem.SubtitleConfiguration.Builder(
-                        android.net.Uri.parse(state.subtitleUri)
-                    )
-                        .setMimeType(androidx.media3.common.MimeTypes.TEXT_VTT)
-                        .setLanguage("id")
-                        .setSelectionFlags(androidx.media3.common.C.SELECTION_FLAG_DEFAULT)
-                        .build()
-                    builder.setSubtitleConfigurations(listOf(subConfig))
-                } catch (_: Exception) { }
-            }
-            val mediaItem = builder.build()
+            val mediaItem = StreamLoader.buildMediaItem(
+                url, state.streamType, state.subtitleUri, state.subtitleEnabled, vm.subtitleLang()
+            )
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
             // Prioritas: posisi saat ganti kualitas
@@ -985,7 +971,7 @@ fun PlayerScreen(
                                     listOf<Pair<Int?, String>>(null to Str.off, 15 to Str.minLabel(15), 30 to Str.minLabel(30)).forEach { (m, label) ->
                                         androidx.compose.material3.FilterChip(
                                             selected = sleepMinutes == m,
-                                            onClick = { sleepMinutes = m },
+                                            onClick = { if (m == null) MiniPlayerController.cancelSleepTimer() else MiniPlayerController.startSleepTimer(m) },
                                             label = { Text(label) }
                                         )
                                     }
@@ -995,7 +981,7 @@ fun PlayerScreen(
                                     listOf(60 to "60 mnt", 90 to "90 mnt").forEach { (m, label) ->
                                         androidx.compose.material3.FilterChip(
                                             selected = sleepMinutes == m,
-                                            onClick = { sleepMinutes = m },
+                                            onClick = { if (m == null) MiniPlayerController.cancelSleepTimer() else MiniPlayerController.startSleepTimer(m) },
                                             label = { Text(label) }
                                         )
                                     }

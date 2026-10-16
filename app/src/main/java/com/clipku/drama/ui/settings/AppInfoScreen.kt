@@ -1,6 +1,7 @@
 package com.clipku.drama.ui.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -89,6 +90,16 @@ fun AppInfoScreen(onBack: () -> Unit) {
                 InfoRow(Str.version, "$versionName ($versionCode)")
                 InfoRow(Str.packageLabel, context.packageName)
                 InfoRow(Str.developer, "Aldi Irawan")
+                InfoRowLink(Str.github, "Aldi1963") {
+                    try {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/Aldi1963")
+                            )
+                        )
+                    } catch (_: Exception) { }
+                }
             }
             Spacer(Modifier.height(16.dp))
             Column(
@@ -118,6 +129,24 @@ private fun InfoRow(label: String, value: String) {
         Text(label, color = TextMuted, fontSize = 12.sp, modifier = Modifier.width(110.dp))
         Text(
             value, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/** Baris info yang bisa di-tap (mis. buka link di browser). */
+@Composable
+private fun InfoRowLink(label: String, value: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(label, color = TextMuted, fontSize = 12.sp, modifier = Modifier.width(110.dp))
+        Text(
+            value, color = Coral, fontSize = 12.sp, fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f)
         )
     }

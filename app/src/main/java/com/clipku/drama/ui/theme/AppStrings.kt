@@ -94,6 +94,7 @@ object Str {
     val appName get() = if (en) "App name" else "Nama aplikasi"
     val packageLabel get() = if (en) "Package" else "Paket"
     val developer get() = "Developer"
+    val github get() = "GitHub"
     val privacy get() = if (en) "Privacy" else "Privasi"
     val privacyNote get() = if (en)
         "Watch history, favorites, search history and settings are stored locally on this device only. Streaming content is provided by third-party providers via the data source above."

@@ -10,10 +10,18 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.clipku.drama.data.history.WatchHistory
 import com.clipku.drama.data.history.WatchStats
+import com.clipku.drama.data.prefs.AppSettings
 import com.clipku.drama.ui.theme.Str
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Mini player ala YouTube: ExoPlayer hidup di level aplikasi (singleton),
@@ -39,6 +47,17 @@ object MiniPlayerController {
     }
 
     private var playerRef: ExoPlayer? = null
+    private var appCtx: Context? = null
+
+    /** Scope milik aplikasi: untuk auto-next & sleep timer saat full player tidak terlihat. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * true saat full player sedang terlihat. Di-set oleh PlayerScreen via
+     * DisposableEffect. Dipakai agar auto-next tidak dobel dengan countdown
+     * milik full player.
+     */
+    var fullPlayerVisible: Boolean = false
 
     private val _session = MutableStateFlow<Session?>(null)
     val session: StateFlow<Session?> = _session.asStateFlow()
@@ -49,12 +68,21 @@ object MiniPlayerController {
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
 
+    /** Menit sleep timer yang aktif (null = mati). */
+    private val _sleepTimerMinutes = MutableStateFlow<Int?>(null)
+    val sleepTimerMinutes: StateFlow<Int?> = _sleepTimerMinutes.asStateFlow()
+    private var sleepJob: Job? = null
+
     /** Hook error player untuk UI yang sedang aktif (di-set oleh PlayerScreen). */
     var onPlayerError: ((String) -> Unit)? = null
+
+    /** Hook saat sleep timer fire (untuk hint UI di full player). */
+    var onSleepTimerFired: (() -> Unit)? = null
 
     /** ExoPlayer app-scoped: dibuat sekali, dipakai ulang antar sesi & antar layar. */
     fun ensurePlayer(appContext: Context): ExoPlayer {
         playerRef?.let { return it }
+        appCtx = appContext.applicationContext
         val dataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Infinix GT 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
             .setConnectTimeoutMs(30000)
@@ -94,6 +122,15 @@ object MiniPlayerController {
                                     )
                                     WatchStats.recordEpisodeDone()
                                 } catch (_: Exception) {}
+                            }
+                            // Auto-next saat MINIMIZED: full player tidak terlihat,
+                            // jadi countdown milik layar tidak jalan — controller yang majukan.
+                            if (!fullPlayerVisible) {
+                                _session.value?.let { s ->
+                                    if (s.ep < s.totalEp && AppSettings.autoNext.value) {
+                                        advanceToNextEpisode(s)
+                                    }
+                                }
                             }
                         }
                     }
@@ -153,6 +190,65 @@ object MiniPlayerController {
         try { if (p.isPlaying) p.pause() else p.play() } catch (_: Exception) {}
     }
 
+    /**
+     * Maju ke episode berikutnya saat mini player aktif (full player tidak
+     * terlihat). Dipanggil dari listener ENDED milik singleton.
+     */
+    private fun advanceToNextEpisode(s: Session) {
+        val ctx = appCtx ?: return
+        val p = playerRef ?: return
+        scope.launch {
+            try {
+                val prefs = ctx.getSharedPreferences("clipku_player", Context.MODE_PRIVATE)
+                val subLang = prefs.getString("subtitle_lang", "id") ?: "id"
+                val subEnabled = prefs.getBoolean("subtitle_enabled", true)
+                val savedQ = prefs.getString("last_quality", null)
+                val saverForced = try {
+                    AppSettings.dataSaver.value && AppSettings.isCellular(ctx)
+                } catch (_: Exception) { false }
+                val res = StreamLoader.loadStream(
+                    ctx, s.contentId, s.ep + 1, subLang, savedQ, saverForced
+                )
+                if (!res.ok) {
+                    onPlayerError?.invoke(res.errorMessage ?: "Gagal memuat episode berikutnya.")
+                    return@launch
+                }
+                val item = StreamLoader.buildMediaItem(
+                    res.url!!, res.type, res.subtitleUri, subEnabled, subLang
+                )
+                p.setMediaItem(item)
+                p.prepare()
+                // resume posisi episode baru bila pernah ditonton
+                try {
+                    val savedPos = WatchHistory.getPosition(s.contentId, s.ep + 1)
+                    if (savedPos > 5000) p.seekTo(savedPos)
+                } catch (_: Exception) { }
+                updateEpisode(s.ep + 1, s.totalEp)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                onPlayerError?.invoke("Gagal memuat episode berikutnya.")
+            }
+        }
+    }
+
+    /** Sleep timer milik aplikasi: tetap jalan walau full player di-minimize. */
+    fun startSleepTimer(minutes: Int) {
+        cancelSleepTimer()
+        _sleepTimerMinutes.value = minutes
+        sleepJob = scope.launch {
+            delay(minutes * 60_000L)
+            try { playerRef?.pause() } catch (_: Exception) { }
+            _sleepTimerMinutes.value = null
+            try { onSleepTimerFired?.invoke() } catch (_: Exception) { }
+        }
+    }
+
+    fun cancelSleepTimer() {
+        try { sleepJob?.cancel() } catch (_: Exception) { }
+        sleepJob = null
+        _sleepTimerMinutes.value = null
+    }
+
     fun savePosition() {
         val s = _session.value ?: return
         val p = playerRef ?: return
@@ -167,6 +263,7 @@ object MiniPlayerController {
     /** Stop total + tutup mini player. */
     fun close() {
         savePosition()
+        cancelSleepTimer()
         try {
             playerRef?.stop()
             playerRef?.clearMediaItems()
